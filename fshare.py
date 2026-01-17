@@ -73,7 +73,10 @@ def send_file(file_path):
         resp += chunk
     s.close()
 
-    print(f"[+] Uploaded {file_path}: {resp.split(b'\\r\\n\\r\\n',1)[-1].decode()}")
+    # Decode response safely
+    response_text = resp.split(b"\r\n\r\n", 1)[-1].decode()
+    print(f"[+] Uploaded {file_path}: {response_text}")
+
 
 # -------- Recursive folder upload --------
 def upload_path(path):
