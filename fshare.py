@@ -6,6 +6,8 @@ import mimetypes
 import struct
 import argparse
 import time
+import json
+import uuid
 
 TOR_SOCKS_HOST = '127.0.0.1'
 TOR_SOCKS_PORT = 9050
@@ -14,11 +16,13 @@ SERVER_PORT = 9051
 BUFFER_SIZE = 8192
 BOUNDARY = '----WebKitFormBoundary7MA4YWxkTrZu0gW'
 
+SESSION_ID = str(uuid.uuid4())  # unique session per run
+
 # ------------------ SOCKS5 CONNECT ------------------
 def socks5_connect(host, port):
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.connect((TOR_SOCKS_HOST, TOR_SOCKS_PORT))
-    s.sendall(b'\x05\x01\x00')       # no authentication
+    s.sendall(b'\x05\x01\x00')
     resp = s.recv(2)
     if resp != b'\x05\x00':
         raise Exception("SOCKS5 handshake failed")
@@ -37,7 +41,6 @@ def send_file(file_path, relative_path):
     if not mime_type:
         mime_type = 'application/octet-stream'
 
-    # Prepare multipart headers and footers
     preamble = (
         f'--{BOUNDARY}\r\n'
         f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
@@ -49,6 +52,7 @@ def send_file(file_path, relative_path):
     headers = (
         f'POST /upload HTTP/1.1\r\n'
         f'Host: {SERVER_HOST}\r\n'
+        f'X-Upload-Session: {SESSION_ID}\r\n'
         f'Content-Length: {total_size}\r\n'
         f'Content-Type: multipart/form-data; boundary={BOUNDARY}\r\n'
         f'Connection: close\r\n\r\n'
@@ -57,12 +61,10 @@ def send_file(file_path, relative_path):
     print(f"\n[+] Uploading {filename} ({os.path.getsize(file_path)/1024:.2f} KB, {mime_type})")
     uploaded = 0
     start_time = time.time()
-
     s = socks5_connect(SERVER_HOST, SERVER_PORT)
     s.sendall(headers + preamble)
     uploaded += len(preamble)
 
-    # Send file in chunks
     with open(file_path, "rb") as f:
         while True:
             chunk = f.read(BUFFER_SIZE)
@@ -76,11 +78,10 @@ def send_file(file_path, relative_path):
             sys.stdout.write(f"\rProgress: {percent:.2f}% | ETA: {eta:.1f}s")
             sys.stdout.flush()
 
-    # Send postamble
     s.sendall(postamble)
     uploaded += len(postamble)
 
-    # Receive response
+    # receive response
     resp = b''
     while True:
         chunk = s.recv(BUFFER_SIZE)
@@ -106,14 +107,39 @@ def upload_path(path, base_path=""):
     else:
         print(f"[!] Path does not exist: {path}")
 
+# ------------------ GENERATE MANIFEST ------------------
+def generate_manifest(paths):
+    manifest = []
+    for path in paths:
+        if os.path.isfile(path):
+            manifest.append(os.path.basename(path))
+        elif os.path.isdir(path):
+            for root, _, files in os.walk(path):
+                for f in files:
+                    full_path = os.path.join(root, f)
+                    relative_path = os.path.relpath(full_path, path)
+                    manifest.append(os.path.join(os.path.basename(path), relative_path))
+    manifest_path = f"manifest_{SESSION_ID}.json"
+    with open(manifest_path, "w") as mf:
+        json.dump(manifest, mf)
+    return manifest_path
+
 # ------------------ CLI ------------------
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Upload files/folders via Tor (live logs, standard library)")
+    parser = argparse.ArgumentParser(description="Upload files/folders via Tor with manifest")
     parser.add_argument("paths", nargs="+", help="Files or folders to upload")
     args = parser.parse_args()
 
+    # Generate manifest
+    manifest_file = generate_manifest(args.paths)
+
+    # Upload files
     for path in args.paths:
         upload_path(path, base_path=path if os.path.isdir(path) else "")
+
+    # Upload manifest file last
+    send_file(manifest_file, os.path.basename(manifest_file))
+
 
 
 
