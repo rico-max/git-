@@ -7,7 +7,6 @@ import struct
 import argparse
 import time
 import json
-import uuid
 
 TOR_SOCKS_HOST = '127.0.0.1'
 TOR_SOCKS_PORT = 9050
@@ -15,8 +14,6 @@ SERVER_HOST = 'uwo2bqudxjq74mpd2guc2hsjbqughbx475hrqnmgbqwxn7eqavt6ouqd.onion'
 SERVER_PORT = 9051
 BUFFER_SIZE = 8192
 BOUNDARY = '----WebKitFormBoundary7MA4YWxkTrZu0gW'
-
-SESSION_ID = str(uuid.uuid4())  # unique session per run
 
 # ------------------ SOCKS5 CONNECT ------------------
 def socks5_connect(host, port):
@@ -34,8 +31,8 @@ def socks5_connect(host, port):
         raise Exception(f"SOCKS5 connection failed with code {resp[1]}")
     return s
 
-# ------------------ SEND FILE IN CHUNKS ------------------
-def send_file(file_path, relative_path):
+# ------------------ SEND FILE ------------------
+def send_file(file_path, relative_path, manifest_file=None):
     filename = relative_path.replace(os.sep, "/")
     mime_type, _ = mimetypes.guess_type(file_path)
     if not mime_type:
@@ -52,7 +49,7 @@ def send_file(file_path, relative_path):
     headers = (
         f'POST /upload HTTP/1.1\r\n'
         f'Host: {SERVER_HOST}\r\n'
-        f'X-Upload-Session: {SESSION_ID}\r\n'
+        + (f'X-Manifest-File: {manifest_file}\r\n' if manifest_file else '')
         f'Content-Length: {total_size}\r\n'
         f'Content-Type: multipart/form-data; boundary={BOUNDARY}\r\n'
         f'Connection: close\r\n\r\n'
@@ -81,7 +78,6 @@ def send_file(file_path, relative_path):
     s.sendall(postamble)
     uploaded += len(postamble)
 
-    # receive response
     resp = b''
     while True:
         chunk = s.recv(BUFFER_SIZE)
@@ -93,7 +89,7 @@ def send_file(file_path, relative_path):
     response_text = resp.split(b"\r\n\r\n", 1)[-1].decode()
     print(f"\n[+] Upload complete: {filename} -> {response_text}")
 
-# ------------------ RECURSIVE FOLDER UPLOAD ------------------
+# ------------------ RECURSIVE UPLOAD ------------------
 def upload_path(path, base_path=""):
     if os.path.isfile(path):
         relative_path = os.path.relpath(path, base_path) if base_path else os.path.basename(path)
@@ -107,7 +103,7 @@ def upload_path(path, base_path=""):
     else:
         print(f"[!] Path does not exist: {path}")
 
-# ------------------ GENERATE MANIFEST ------------------
+# ------------------ MANIFEST ------------------
 def generate_manifest(paths):
     manifest = []
     for path in paths:
@@ -119,10 +115,10 @@ def generate_manifest(paths):
                     full_path = os.path.join(root, f)
                     relative_path = os.path.relpath(full_path, path)
                     manifest.append(os.path.join(os.path.basename(path), relative_path))
-    manifest_path = f"manifest_{SESSION_ID}.json"
-    with open(manifest_path, "w") as mf:
+    manifest_file = "manifest.json"
+    with open(manifest_file, "w") as mf:
         json.dump(manifest, mf)
-    return manifest_path
+    return manifest_file
 
 # ------------------ CLI ------------------
 if __name__ == "__main__":
@@ -130,15 +126,15 @@ if __name__ == "__main__":
     parser.add_argument("paths", nargs="+", help="Files or folders to upload")
     args = parser.parse_args()
 
-    # Generate manifest
     manifest_file = generate_manifest(args.paths)
 
-    # Upload files
+    # Upload files first
     for path in args.paths:
         upload_path(path, base_path=path if os.path.isdir(path) else "")
 
-    # Upload manifest file last
-    send_file(manifest_file, os.path.basename(manifest_file))
+    # Upload manifest last with header
+    send_file(manifest_file, os.path.basename(manifest_file), manifest_file=os.path.basename(manifest_file))
+
 
 
 
