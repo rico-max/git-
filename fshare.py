@@ -19,10 +19,12 @@ BOUNDARY = '----WebKitFormBoundary7MA4YWxkTrZu0gW'
 def socks5_connect(host, port):
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.connect((TOR_SOCKS_HOST, TOR_SOCKS_PORT))
+    # SOCKS5 handshake
     s.sendall(b'\x05\x01\x00')
     resp = s.recv(2)
     if resp != b'\x05\x00':
         raise Exception("SOCKS5 handshake failed")
+    # Connect request
     host_bytes = host.encode()
     req = b'\x05\x01\x00\x03' + bytes([len(host_bytes)]) + host_bytes + struct.pack('>H', port)
     s.sendall(req)
@@ -46,14 +48,19 @@ def send_file(file_path, relative_path, manifest_file=None):
     postamble = f'\r\n--{BOUNDARY}--\r\n'.encode()
     total_size = os.path.getsize(file_path) + len(preamble) + len(postamble)
 
+    # Build headers safely
     headers = (
         f'POST /upload HTTP/1.1\r\n'
         f'Host: {SERVER_HOST}\r\n'
-        + (f'X-Manifest-File: {manifest_file}\r\n' if manifest_file else '')
+    )
+    if manifest_file:
+        headers += f'X-Manifest-File: {manifest_file}\r\n'
+    headers += (
         f'Content-Length: {total_size}\r\n'
         f'Content-Type: multipart/form-data; boundary={BOUNDARY}\r\n'
         f'Connection: close\r\n\r\n'
-    ).encode()
+    )
+    headers = headers.encode()
 
     print(f"\n[+] Uploading {filename} ({os.path.getsize(file_path)/1024:.2f} KB, {mime_type})")
     uploaded = 0
@@ -62,6 +69,7 @@ def send_file(file_path, relative_path, manifest_file=None):
     s.sendall(headers + preamble)
     uploaded += len(preamble)
 
+    # Send file content in chunks
     with open(file_path, "rb") as f:
         while True:
             chunk = f.read(BUFFER_SIZE)
@@ -78,6 +86,7 @@ def send_file(file_path, relative_path, manifest_file=None):
     s.sendall(postamble)
     uploaded += len(postamble)
 
+    # Receive response
     resp = b''
     while True:
         chunk = s.recv(BUFFER_SIZE)
@@ -128,14 +137,9 @@ if __name__ == "__main__":
 
     manifest_file = generate_manifest(args.paths)
 
-    # Upload files first
+    # Upload all files/folders first
     for path in args.paths:
         upload_path(path, base_path=path if os.path.isdir(path) else "")
 
-    # Upload manifest last with header
+    # Upload manifest last with special header
     send_file(manifest_file, os.path.basename(manifest_file), manifest_file=os.path.basename(manifest_file))
-
-
-
-
-
