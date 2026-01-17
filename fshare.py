@@ -5,6 +5,7 @@ import socket
 import mimetypes
 import struct
 import argparse
+import time
 
 TOR_SOCKS_HOST = '127.0.0.1'
 TOR_SOCKS_PORT = 9050
@@ -29,32 +30,55 @@ def socks5_connect(host, port):
         raise Exception(f"SOCKS5 connection failed with code {resp[1]}")
     return s
 
-# ------------------ MULTIPART FILE POST ------------------
+# ------------------ SEND FILE IN CHUNKS ------------------
 def send_file(file_path, relative_path):
-    filename = relative_path.replace(os.sep, "/")  # send as HTTP-style path
+    filename = relative_path.replace(os.sep, "/")
     mime_type, _ = mimetypes.guess_type(file_path)
     if not mime_type:
         mime_type = 'application/octet-stream'
 
-    with open(file_path, "rb") as f:
-        file_data = f.read()
-
-    body = (
+    # Prepare multipart headers and footers
+    preamble = (
         f'--{BOUNDARY}\r\n'
         f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
         f'Content-Type: {mime_type}\r\n\r\n'
-    ).encode() + file_data + f'\r\n--{BOUNDARY}--\r\n'.encode()
+    ).encode()
+    postamble = f'\r\n--{BOUNDARY}--\r\n'.encode()
+    total_size = os.path.getsize(file_path) + len(preamble) + len(postamble)
 
     headers = (
         f'POST /upload HTTP/1.1\r\n'
         f'Host: {SERVER_HOST}\r\n'
-        f'Content-Length: {len(body)}\r\n'
+        f'Content-Length: {total_size}\r\n'
         f'Content-Type: multipart/form-data; boundary={BOUNDARY}\r\n'
         f'Connection: close\r\n\r\n'
     ).encode()
 
+    print(f"\n[+] Uploading {filename} ({os.path.getsize(file_path)/1024:.2f} KB, {mime_type})")
+    uploaded = 0
+    start_time = time.time()
+
     s = socks5_connect(SERVER_HOST, SERVER_PORT)
-    s.sendall(headers + body)
+    s.sendall(headers + preamble)
+    uploaded += len(preamble)
+
+    # Send file in chunks
+    with open(file_path, "rb") as f:
+        while True:
+            chunk = f.read(BUFFER_SIZE)
+            if not chunk:
+                break
+            s.sendall(chunk)
+            uploaded += len(chunk)
+            percent = (uploaded / total_size) * 100
+            elapsed = time.time() - start_time
+            eta = (elapsed / uploaded) * (total_size - uploaded) if uploaded else 0
+            sys.stdout.write(f"\rProgress: {percent:.2f}% | ETA: {eta:.1f}s")
+            sys.stdout.flush()
+
+    # Send postamble
+    s.sendall(postamble)
+    uploaded += len(postamble)
 
     # Receive response
     resp = b''
@@ -66,7 +90,7 @@ def send_file(file_path, relative_path):
     s.close()
 
     response_text = resp.split(b"\r\n\r\n", 1)[-1].decode()
-    print(f"[+] Uploaded {relative_path}: {response_text}")
+    print(f"\n[+] Upload complete: {filename} -> {response_text}")
 
 # ------------------ RECURSIVE FOLDER UPLOAD ------------------
 def upload_path(path, base_path=""):
@@ -84,16 +108,12 @@ def upload_path(path, base_path=""):
 
 # ------------------ CLI ------------------
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Upload files/folders via Tor (standard library)")
+    parser = argparse.ArgumentParser(description="Upload files/folders via Tor (live logs, standard library)")
     parser.add_argument("paths", nargs="+", help="Files or folders to upload")
     args = parser.parse_args()
 
     for path in args.paths:
-        if os.path.isfile(path):
-            upload_path(path)
-        elif os.path.isdir(path):
-            upload_path(path, base_path=path)
-        else:
-            print(f"[!] Invalid path: {path}")
+        upload_path(path, base_path=path if os.path.isdir(path) else "")
+
 
 
